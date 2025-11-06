@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Редактор викторины</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    max-width: 800px;
+  }
+  h1 {
+    margin-bottom: 10px;
+  }
+  label {
+    display: block;
+    margin: 8px 0;
+  }
+  input[type=text] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px;
+    margin-top: 4px;
+  }
+  .question {
+    border: 1px solid #ccc;
+    padding: 10px;
+    margin-bottom: 15px;
+    background: #f9f9f9;
+  }
+  .question h3 {
+    margin: 0 0 10px;
+  }
+  .answers label {
+    display: block;
+    margin: 5px 0;
+  }
+  .remove-question {
+    margin-top: 10px;
+    background: #e74c3c;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  #add-question, #save-json {
+    margin: 10px 5px 0 0;
+    padding: 8px 16px;
+    background: #3498db;
+    color: white;
+    border: none;
+    cursor: pointer;
+  }
+  #save-json {
+    background: #2ecc71;
+  }
+  button:hover {
+    opacity: 0.9;
+  }
+</style>
+</head>
+<body>
+<h1>Редактор квиза</h1>
+<div>
+  <label>Название квиза:
+    <input type="text" id="quiz-title" placeholder="Введите название викторины">
+  </label>
+</div>
+<div id="questions-container"></div>
+<button id="add-question">Добавить вопрос</button>
+<button id="save-json">Сохранить JSON</button>
+
+<template id="question-template">
+  <div class="question">
+    <h3>Вопрос <span class="qnum"></span></h3>
+    <label>Текст вопроса:
+      <input type="text" class="question-text" placeholder="Введите текст вопроса">
+    </label>
+    <div class="answers">
+      <label><input type="radio" name="correct" value="0"> <input type="text" class="answer-text" placeholder="Вариант ответа"></label>
+      <label><input type="radio" name="correct" value="1"> <input type="text" class="answer-text" placeholder="Вариант ответа"></label>
+      <label><input type="radio" name="correct" value="2"> <input type="text" class="answer-text" placeholder="Вариант ответа"></label>
+      <label><input type="radio" name="correct" value="3"> <input type="text" class="answer-text" placeholder="Вариант ответа"></label>
+    </div>
+    <button class="remove-question">Удалить вопрос</button>
+  </div>
+</template>
+
+<script>
+  const addBtn = document.getElementById('add-question');
+  const saveBtn = document.getElementById('save-json');
+  const container = document.getElementById('questions-container');
+  const template = document.getElementById('question-template');
+  let questionCount = 0;
+
+  function updateNumbers() {
+    const questions = container.querySelectorAll('.question');
+    let i = 1;
+    questions.forEach(q => {
+      q.querySelector('.qnum').textContent = i;
+      const radios = q.querySelectorAll('input[type=radio]');
+      radios.forEach(r => r.name = 'correct' + i);
+      i++;
+    });
+    questionCount = i - 1;
+  }
+
+  function addQuestion() {
+    questionCount++;
+    const clone = template.content.cloneNode(true);
+    clone.querySelector('.qnum').textContent = questionCount;
+    const radios = clone.querySelectorAll('input[type=radio]');
+    radios.forEach(r => {
+      r.name = 'correct' + questionCount;
+    });
+    container.appendChild(clone);
+  }
+
+  container.addEventListener('click', function(e) {
+    if (e.target.matches('.remove-question')) {
+      e.target.closest('.question').remove();
+      updateNumbers();
+    }
+  });
+
+  function saveJSON() {
+    const title = document.getElementById('quiz-title').value.trim();
+    const quiz = { title: title, questions: [] };
+    const questionElems = container.querySelectorAll('.question');
+    questionElems.forEach(qElem => {
+      const questionText = qElem.querySelector('.question-text').value.trim();
+      const answers = Array.from(qElem.querySelectorAll('.answer-text')).map(a => a.value.trim());
+      const radios = qElem.querySelectorAll('input[type=radio]');
+      let correctIndex = 0;
+      radios.forEach((r, i) => {
+        if (r.checked) correctIndex = i;
+      });
+      quiz.questions.push({
+        question: questionText,
+        answers: answers,
+        correct: correctIndex
+      });
+    });
+    const dataStr = JSON.stringify(quiz, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (title ? title.replace(/\s+/g, '_') : 'quiz') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  addBtn.addEventListener('click', addQuestion);
+  saveBtn.addEventListener('click', saveJSON);
+
+  // Начать с одного вопроса по умолчанию
+  addQuestion();
+</script>
+</body>
+</html>
