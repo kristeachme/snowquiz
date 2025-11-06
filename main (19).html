@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Falling Items — Game</title>
+
+  <!--
+    ==========================================================================================
+    ОСНОВНЫЕ ПРАВКИ (сохранена старая логика id/json):
+    - Прозрачный фон iframe целиком.
+    - Стартовое меню ровно по центру.
+    - Взаимоисключающий фон элемента: либо картинка-рамка, либо сплошной цвет (не смешиваются).
+    - Геометрия фигур не «приплюснута» (круг/ромб/звезда = квадрат по внешнему боксу).
+    - Клики корректно обрабатываются.
+    - Цвет интерфейса (=акцент HUD/меню) берётся из style.borderColor даже если рамка отключена/заменена картинкой.
+    - Скорость: 1 — очень медленно; 10 — быстро. Плавные параметры падения/спавна.
+    - Очки: зависят от скорости + комбо (streak). Промах не штрафует очки, но сбрасывает комбо.
+    - Финальный экран: попадания/мимо/ушедшие правильные/итог, кастомный текст из cfg.finalFeedback (если задан).
+    - Поддержка MathJax (language:'math').
+    - Поддержка рандомизации уровней (cfg.randomLevels === true).
+    ==========================================================================================
+  -->
+
+  <style>
+    :root{
+      /* Цвет интерфейса (HUD/кнопки/акценты) подставим из cfg.style.borderColor */
+      --ui: #ffd700;
+      --ui-soft: rgba(255,215,0,.14);
+
+      /* Цвет неона для элементов (если включён cfg.style.glow) */
+      --glow: #00f0ff;
+    }
+
+    /* БАЗА */
+    html,body{height:100%}
+    body{
+      margin:0;
+      background: transparent;          /* ВАЖНО: фон всего фрейма полностью прозрачный */
+      color:#fff;
+      overflow:hidden;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    }
+
+    /* Сцена */
+    #game{
+      position:relative;
+      width:100%;
+      height:100%;
+      overflow:hidden;
+      /* никаких фонов — должна быть прозрачность до границ iframe */
+    }
+
+    /* HUD */
+    .hud{
+      position:fixed; left:12px; top:12px; right:12px;
+      display:flex; gap:12px; align-items:center; justify-content:space-between;
+      font-weight:700; z-index:10; pointer-events:none;
+    }
+    .badge{
+      pointer-events:none;
+      background:rgba(0,0,0,.45);
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:12px;
+      padding:10px 14px;
+      box-shadow:0 8px 24px rgba(0,0,0,.35), 0 0 18px var(--ui-soft) inset;
+    }
+    .levelTitle{ color:var(--ui) }
+    .timer{min-width:110px; text-align:center}
+    .score{min-width:110px; text-align:center}
+
+    /* Оверлеи (старт/межуровневый/финал) */
+    .overlay{
+      position:fixed; inset:0;
+      display:flex; align-items:center; justify-content:center; flex-direction:column;
+      background: none;                /* Никаких затемнений — фрейм прозрачный */
+      color:#fff; z-index:20; gap:18px;
+      pointer-events:auto;
+    }
+    .overlay .panel{
+      background: rgba(0,0,0,.55);
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:16px;
+      padding:22px 26px;
+      text-align:center;
+      box-shadow:0 0 26px var(--ui-soft);
+      min-width:min(92vw,560px);
+    }
+    .overlay h2{
+      margin:6px 0 6px;
+      font-size:24px; font-weight:900; color:var(--ui);
+      text-shadow:0 0 20px var(--ui-soft);
+    }
+    .overlay p{ margin:0 0 8px; opacity:.9 }
+    .overlay .row{ display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap }
+    .overlay button{
+      background:linear-gradient(90deg,#ffbf00,#ffd700);
+      color:#000; border:0; border-radius:10px; font-weight:900; padding:12px 16px; cursor:pointer;
+      transition:transform .12s ease, box-shadow .12s ease;
+    }
+    .overlay button:hover{ transform:translateY(-1px); box-shadow:0 10px 24px rgba(255,215,0,.35) }
+
+    /* Падающие элементы */
+    .item{
+      position:absolute;
+      top:-160px; left:0;
+      transform:translateZ(0);
+      will-change:transform, top, left, width, height;
+      display:inline-flex;
+      align-items:center; justify-content:center;
+      min-width:120px; min-height:80px;
+      padding:0;                          /* Внутренние отступы — в .content */
+      user-select:none; cursor:pointer;
+    }
+    .item .bg{
+      position:absolute; inset:0;
+      background: transparent;            /* По умолчанию прозрачный слой */
+      opacity:1;
+      border:0 solid #fff;                /* Настраивается из cfg.style */
+      box-shadow:none;                    /* Эффекты сюда */
+      transition:filter .15s ease;
+      background-position:center !important;
+      background-repeat:no-repeat !important;
+      background-size: contain !important;/* Картинка-рама масштабируется под бокс */
+    }
+      .item .content{
+      position:relative; z-index:1;
+      display:flex; align-items:center; justify-content:center;
+      /* padding теперь задаётся из cfg.style.pad в JS */
+      text-align:center;
+      line-height:1.15;
+      max-width:520px; max-height:300px;  /* безопасность; дальше автофит подрежет */
+    }
+
+    .item .content span{
+      display:inline-block;
+      font-weight:800;
+      white-space:nowrap;
+    }
+    .item .content img{
+      display:block;
+      max-width:180px; max-height:140px;
+      object-fit:contain;
+      pointer-events:none;
+    }
+
+    /* Фигуры — применяются только к .bg (фон-слой), контент не клипается */
+    .shape-rect    .bg{ border-radius:10px }
+    .shape-rounded .bg{ border-radius:20px }
+    .shape-circle  .bg{ border-radius:50% }
+    .shape-diamond .bg{ clip-path:polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%) }
+    .shape-star    .bg{
+      clip-path: polygon(
+        50% 0%, 61% 35%, 98% 35%,
+        68% 57%, 79% 91%, 50% 70%,
+        21% 91%, 32% 57%, 2% 35%, 39% 35%
+      );
+    }
+
+    /* Эффекты */
+    .fx-shadow .bg{ box-shadow:0 10px 30px rgba(0,0,0,.55) }
+    .fx-3d     .bg{ box-shadow: 7px 7px 20px rgba(0,0,0,.55), inset -5px -5px 12px rgba(255,255,255,.22) }
+    .fx-glow   .bg{ box-shadow:0 0 18px var(--glow, #00f0ff), 0 0 28px rgba(0,0,0,.25) }
+    .fx-border .bg{ border-style:solid }
+
+    /* Поп при ловле */
+    .caught{ animation:pop .45s ease forwards }
+    @keyframes pop{
+      0%{ transform:scale(1); opacity:1 }
+      50%{ transform:scale(1.14); opacity:1 }
+      100%{ transform:scale(0.85); opacity:0 }
+    }
+
+    /* Блёстки */
+    .sparkle{
+      position:absolute; width:6px; height:6px; border-radius:50%;
+      background:rgba(255,255,255,.9); pointer-events:none;
+      animation:spark 0.9s forwards;
+      filter:drop-shadow(0 0 6px #fff); z-index:5;
+    }
+    @keyframes spark{
+      from{ opacity:1; transform:translate(0,0) scale(1) }
+      to  { opacity:0; transform:translate(var(--dx), var(--dy)) scale(.2) }
+    }
+
+    /* Всплывающие очки */
+    .score-float{
+      position:fixed; z-index:30;
+      font-weight:900;
+      text-shadow: 0 0 10px rgba(255,255,255,.5), 0 0 20px var(--ui-soft);
+      animation:floatUp .85s ease-out forwards;
+      pointer-events:none;
+    }
+    @keyframes floatUp{
+      0%  { transform:translate(-50%,-10px); opacity:0 }
+      10% { opacity:1; }
+      100%{ transform:translate(-50%,-60px); opacity:0 }
+    }
+
+    /* Фейерверк (финал/межуровневый) */
+    .firework{
+      position:fixed; width:4px; height:4px; border-radius:50%;
+      background:#fff; pointer-events:none; z-index:40; animation:fw 900ms ease-out forwards;
+    }
+    @keyframes fw{
+      from{ transform:translate(0,0) scale(1); opacity:1 }
+      to  { transform:translate(var(--tx), var(--ty)) scale(0.1); opacity:0 }
+    }
+  </style>
+    <script>
+    // === Подключение Google Fonts из cfg.font ===
+    function loadGoogleFont(fontName){
+      if(!fontName) return;
+      const family = fontName.replace(/ /g, '+');
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `https://fonts.googleapis.com/css2?family=${family}:wght@400;700&display=swap`;
+      document.head.appendChild(link);
+    }
+  </script>
+</head>
+<body>
+
+  <!-- HUD -->
+  <div class="hud">
+    <div class="badge levelTitle" id="hudLevel">—</div>
+    <div class="badge timer" id="hudTimer">00</div>
+    <div class="badge score" id="hudScore">0</div>
+  </div>
+
+  <!-- Сцена -->
+  <div id="game" aria-live="polite"></div>
+
+  <!-- Звуки -->
+  <audio id="popSound" src="pop.mp3" preload="auto"></audio>
+  <audio id="winSound" src="win.mp3" preload="auto"></audio>
+
+  <!-- MathJax для формул -->
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+
+  <script>
+    /* ===================== Локализация ===================== */
+   const I18N = {
+  ru:{
+    startTitle:"Игра «Падающие элементы»",
+    startBtn:"Начать", contBtn:"Продолжить", nextBtn:"Следующий уровень",
+    restartBtn:"Играть снова", 
+    catchAll:"Поймай все",
+    level:n=>`Уровень ${n}`, levelOf:(n,t)=>`Уровень ${n} из ${t}`,
+    time:"Время", score:"Счёт",
+    levelComplete:"Уровень пройден!", gameComplete:"Игра пройдена!",
+    hits:"Попаданий", wrong:"Мимо", missed:"Ушло правильных", total:"Итого",
+    finalFeedbackTitle:"Молодец!", defaultFinalFeedback:"Отличная работа!"
+  },
+  en:{
+    startTitle:"Falling Items",
+    startBtn:"Start", contBtn:"Continue", nextBtn:"Next level",
+    restartBtn:"Play again",
+    catchAll:"Catch all",
+    level:n=>`Level ${n}`, levelOf:(n,t)=>`Level ${n} of ${t}`,
+    time:"Time", score:"Score",
+    levelComplete:"Level complete!", gameComplete:"Game complete!",
+    hits:"Hits", wrong:"Wrong clicks", missed:"Missed correct", total:"Total",
+    finalFeedbackTitle:"Well done!", defaultFinalFeedback:"Great job!"
+  },
+  fr:{
+    startTitle:"Objets Tombants",
+    startBtn:"Commencer", contBtn:"Continuer", nextBtn:"Niveau suivant",
+    restartBtn:"Rejouer",
+    catchAll:"Attrapez tous",
+    level:n=>`Niveau ${n}`, levelOf:(n,t)=>`Niveau ${n} sur ${t}`,
+    time:"Temps", score:"Score",
+    levelComplete:"Niveau terminé !", gameComplete:"Jeu terminé !",
+    hits:"Touchés", wrong:"Faux clics", missed:"Justes ratés", total:"Total",
+    finalFeedbackTitle:"Bravo !", defaultFinalFeedback:"Excellent travail !"
+  },
+  es:{
+    startTitle:"Elementos Cayendo",
+    startBtn:"Comenzar", contBtn:"Continuar", nextBtn:"Siguiente nivel",
+    restartBtn:"Jugar de nuevo",
+    catchAll:"Atrapa todos",
+    level:n=>`Nivel ${n}`, levelOf:(n,t)=>`Nivel ${n} de ${t}`,
+    time:"Tiempo", score:"Puntuación",
+    levelComplete:"¡Nivel completado!", gameComplete:"¡Juego completado!",
+    hits:"Aciertos", wrong:"Clics erróneos", missed:"Correctos perdidos", total:"Total",
+    finalFeedbackTitle:"¡Bien hecho!", defaultFinalFeedback:"¡Gran trabajo!"
+  },
+  de:{
+    startTitle:"Fallende Elemente",
+    startBtn:"Start", contBtn:"Weiter", nextBtn:"Nächste Stufe",
+    restartBtn:"Nochmals spielen",
+    catchAll:"Fange alle",
+    level:n=>`Level ${n}`, levelOf:(n,t)=>`Level ${n} von ${t}`,
+    time:"Zeit", score:"Punkte",
+    levelComplete:"Level geschafft!", gameComplete:"Spiel beendet!",
+    hits:"Treffer", wrong:"Falsche Klicks", missed:"Verpasste Richtige", total:"Gesamt",
+    finalFeedbackTitle:"Gut gemacht!", defaultFinalFeedback:"Weiter so!"
+  },
+  zh:{
+    startTitle:"下落元素",
+    startBtn:"开始", contBtn:"继续", nextBtn:"下一关",
+    restartBtn:"再玩一次",
+    catchAll:"抓住所有",
+    level:n=>`第 ${n} 关`, levelOf:(n,t)=>`第 ${n}/${t} 关`,
+    time:"时间", score:"分数",
+    levelComplete:"关卡通过！", gameComplete:"游戏完成！",
+    hits:"命中", wrong:"误点", missed:"错过正确", total:"总分",
+    finalFeedbackTitle:"做得好！", defaultFinalFeedback:"继续努力！"
+  },
+  ja:{
+    startTitle:"落下アイテム",
+    startBtn:"スタート", contBtn:"つづける", nextBtn:"次のレベル",
+    restartBtn:"もう一度",
+    catchAll:"全部キャッチ",
+    level:n=>`レベル ${n}`, levelOf:(n,t)=>`${t} 中 ${n} レベル`,
+    time:"時間", score:"スコア",
+    levelComplete:"レベルクリア！", gameComplete:"ゲームクリア！",
+    hits:"ヒット", wrong:"ミスクリック", missed:"見逃した正解", total:"合計",
+    finalFeedbackTitle:"よくできました！", defaultFinalFeedback:"その調子！"
+  },
+ math:{
+  startTitle:"Игра «Падающие элементы» (Математика)",
+  startBtn:"Начать", contBtn:"Продолжить", nextBtn:"Следующий уровень",
+  restartBtn:"Играть снова",
+  catchAll:"Поймай все",
+  level:n=>`Уровень ${n}`, levelOf:(n,t)=>`Уровень ${n} из ${t}`,
+  time:"Время", score:"Счёт",
+  levelComplete:"Уровень пройден!", gameComplete:"Игра пройдена!",
+  hits:"Попаданий", wrong:"Мимо", missed:"Ушло правильных", total:"Итого",
+  finalFeedbackTitle:"Молодец!", defaultFinalFeedback:"Отличная работа!"
+}
+};
+    function t(lang,key,...args){
+      const dict = I18N[lang]||I18N.ru; const v = dict[key];
+      return (typeof v==="function")?v(...args):(v??key);
+    }
+
+    /* ===================== Утилиты ===================== */
+    const $ = sel => document.querySelector(sel);
+    const rnd = (a,b)=> a + Math.random()*(b-a);
+    const clamp = (v,min,max)=> Math.max(min, Math.min(max,v));
+
+    function hexToRgb(hex){
+      let s = (hex||'').trim();
+      if(!s) return {r:255,g:215,b:0};
+      if(s[0]==='#') s=s.slice(1);
+      if(s.length===3) s=s.split('').map(c=>c+c).join('');
+      const n=parseInt(s,16);
+      return {r:(n>>16)&255, g:(n>>8)&255, b:(n)&255};
+    }
+
+    /* ===================== Загрузка cfg по id ===================== */
+    const params = new URLSearchParams(location.search);
+    const GAME_ID = params.get('id');                           // старая логика сохранена
+    const JSON_BASE = "https://nikashum93.github.io/texts/data/"; // оставляем как было
+
+    let cfg = null;
+    let LANG = 'ru'; // по умолчанию
+
+    (async function boot(){
+      if(!GAME_ID){
+        showFatal("No id", "Не передан id в строке запроса.");
+        return;
+      }
+      try{
+        const url = `${JSON_BASE}${encodeURIComponent(GAME_ID)}.json?v=${Date.now()}`;
+        const res = await fetch(url, { cache:'no-store' });
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        cfg = await res.json();
+      }catch(e){
+        showFatal("Load error", `Ошибка загрузки настроек: ${e.message}\nПроверь публикацию в texts/data.`);
+        return;
+      }
+
+    LANG = (cfg.language || 'ru').toLowerCase();
+
+      // Загружаем Google Font из конфигурации
+      if(cfg.font){
+        loadGoogleFont(cfg.font);
+      }
+      // Цвет интерфейса — даже если рамка заменена картинкой, берём borderColor (или glowColor)
+      const uiColor = (cfg.style && (cfg.style.borderColor || cfg.style.glowColor)) || '#ffd700';
+      document.documentElement.style.setProperty('--ui', uiColor);
+      document.documentElement.style.setProperty('--ui-soft', 'rgba('+Object.values(hexToRgb(uiColor)).join(',') + ',.14)');
+
+      if (cfg.style && cfg.style.glowColor){
+        document.documentElement.style.setProperty('--glow', cfg.style.glowColor);
+      }
+
+      // Кастомный курсор
+      if (cfg.cursor) document.body.style.cursor = `url(${cfg.cursor}), auto`;
+
+      updateHUD(1, (cfg.levels||[]).length||0);
+      showStartOverlay();
+    })();
+
+    /* ===================== HUD / Оверлеи ===================== */
+    const hudLevel = $('#hudLevel');
+    const hudTimer = $('#hudTimer');
+    const hudScore = $('#hudScore');
+
+         function updateHUD(current, total){
+  const title = cfg && cfg.levels && cfg.levels[current-1] ? (cfg.levels[current-1].target || "") : "";
+  const isMath = (cfg.language || '') === 'math';
+  const html = title
+    ? `${t(LANG,'level', current)}: ${isMath ? `\\(${title}\\)` : title}`
+    : `${t(LANG,'level', current)}`;
+  hudLevel.innerHTML = html;
+  if (isMath) {
+    MathJax.typesetPromise([hudLevel]);
+  }
+}
+
+    function showFatal(title, message){
+      const ov = document.createElement('div');
+      ov.className = 'overlay';
+      ov.innerHTML = `
+        <div class="panel">
+          <h2>${title}</h2>
+          <p style="white-space:pre-wrap">${message}</p>
+        </div>`;
+      document.body.appendChild(ov);
+    }
+
+    let overlayNode = null;
+
+  function showStartOverlay(){
+  if (overlayNode) overlayNode.remove();
+  overlayNode = document.createElement('div');
+  overlayNode.className = 'overlay';
+
+  const total = (cfg.levels||[]).length || 0;
+  const targetVal = cfg.levels.length > 0 ? (cfg.levels[0].target || "") : "";
+  const isMath = (cfg.language || '') === 'math';
+  const targetHtml = targetVal ? (isMath ? `\\(${targetVal}\\)` : targetVal) : "";
+
+  overlayNode.innerHTML = `
+    <div class="panel">
+      <h2>${t(LANG,'startTitle')}</h2>
+      <p>${t(LANG,'catchAll')} ${targetHtml}</p>
+      <div class="row" style="margin-top:14px">
+        <button id="btnStart">${t(LANG,'startBtn')}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlayNode);
+
+  if (isMath && targetHtml) {
+    MathJax.typesetPromise([overlayNode]);
+  }
+
+  // Теперь кнопка реально есть
+  $('#btnStart').addEventListener('click', ()=>{
+    overlayNode.remove();
+    startGame();
+  }, { once: true });
+}
+
+    function showLevelCompleteOverlay(current, total, onNext){
+      if (overlayNode) overlayNode.remove();
+      overlayNode = document.createElement('div');
+      overlayNode.className = 'overlay';
+      overlayNode.innerHTML = `
+        <div class="panel">
+          <h2>${t(LANG,'levelComplete')}</h2>
+          <p>${t(LANG,'levelOf', current, total)}</p>
+          <div class="row"><button id="btnNext">${t(LANG,'nextBtn')}</button></div>
+        </div>`;
+      document.body.appendChild(overlayNode);
+      $('#btnNext').addEventListener('click', ()=>{
+        overlayNode.remove();
+        onNext && onNext();
+      }, { once:true });
+    }
+
+    function showGameCompleteOverlay(stats){
+  if (overlayNode) overlayNode.remove();
+  overlayNode = document.createElement('div');
+  overlayNode.className = 'overlay';
+
+  const custom = (cfg.finalFeedback || cfg.feedback || "").trim();
+  const fbTitle = t(LANG,'finalFeedbackTitle');
+  const fbText = custom || t(LANG,'defaultFinalFeedback');
+
+  overlayNode.innerHTML = `
+    <div class="panel">
+      <h2>${t(LANG,'gameComplete')}</h2>
+      <p style="margin:6px 0 6px; font-size:18px; color:var(--ui)">${fbTitle}</p>
+      <p style="white-space:pre-wrap">${fbText}</p>
+
+      <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px; text-align:left">
+        <div>${t(LANG,'hits')}: <b>${stats.hits}</b></div>
+        <div>${t(LANG,'wrong')}: <b>${stats.wrong}</b></div>
+        <div>${t(LANG,'missed')}: <b>${stats.missed}</b></div>
+        <div>${t(LANG,'total')}: <b>${stats.total}</b></div>
+      </div>
+
+      <div class="row" style="margin-top:14px">
+        <button id="btnRestart">${t(LANG,'restartBtn')}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlayNode);
+
+  $('#btnRestart').addEventListener('click', ()=> location.reload(), { once:true });
+}
+
+    /* ===================== Геймплей ===================== */
+    const game = $('#game');
+    const popSound = $('#popSound');
+    const winSound = $('#winSound');
+
+    let score = 0;
+    let currentLevel = 0;
+    let running = false;
+
+    let levelTimerHandle = null;
+    let spawnerHandle = null;
+
+    let hits = 0;
+    let wrongClicks = 0;     // «мимо» — по неправильным
+    let missedCorrect = 0;   // упал правильный и ушёл вниз
+
+    // Комбо (streak): растёт при попаданиях, сбрасывается при «мимо»
+    let streak = 0;
+
+    function computeSpeedParams(S){
+      const s = clamp(Number(S||5), 1, 10);
+      // Скорость падения: очень медленно на 1, быстро на 10
+      const vel = 0.65 + (s-1) * (6.2-0.65)/9;   // ~0.65..6.2 px/кадр
+      // Интервал спавна: 1 — редкий спавн, 10 — частый
+      const spawn = 1700 - (s-1) * (1350)/9;     // ~1700ms → ~350ms
+      // База очков: скорость влияет на «цену» одного попадания
+      const basePts = 8 + (s-1) * (50-8)/9;      // ~8..50
+      return { vel, spawn, basePts: Math.round(basePts) };
+    }
+
+    // Инициализируем после загрузки cfg
+    let SPEED = { vel: 1.5, spawn: 1000, basePts: 20 };
+
+    function startGame(){
+      // Обновим параметры скорости на основании cfg.speed
+      SPEED = computeSpeedParams(cfg?.speed ?? 5);
+
+      // Ресет статистик
+      score = 0; hits = 0; wrongClicks = 0; missedCorrect = 0; streak = 0;
+      hudScore.textContent = '0';
+
+      // Рандом уровней, если нужно — тасуем копию
+      if (cfg.randomLevels && Array.isArray(cfg.levels)) {
+        cfg.levels = shuffleCopy(cfg.levels);
+      }
+
+      currentLevel = 0;
+      running = true;
+      startLevel();
+    }
+
+    function shuffleCopy(arr){
+      const a = (arr||[]).slice();
+      for (let i=a.length-1;i>0;i--){
+        const j = Math.floor(Math.random()*(i+1));
+        [a[i],a[j]] = [a[j],a[i]];
+      }
+      return a;
+    }
+
+    function startLevel(){
+      currentLevel++;
+      const levels = Array.isArray(cfg.levels) ? cfg.levels : [];
+      if(currentLevel > levels.length){
+        running = false;
+        fireworks();
+        try{ winSound.currentTime=0; winSound.play(); }catch(_){}
+        showGameCompleteOverlay({hits, wrong:wrongClicks, missed: missedCorrect, total: score});
+        return;
+      }
+
+      updateHUD(currentLevel, levels.length);
+      const lv = levels[currentLevel-1];
+
+      // Таймер уровня
+      let timeLeft = Math.max(5, Number(lv.timer || 30));
+      hudTimer.textContent = timeLeft.toString().padStart(2,'0');
+      if (levelTimerHandle) clearInterval(levelTimerHandle);
+      levelTimerHandle = setInterval(()=>{
+        if(!running) return;
+        timeLeft--;
+        hudTimer.textContent = timeLeft.toString().padStart(2,'0');
+        if(timeLeft <= 0){
+          clearInterval(levelTimerHandle);
+          if (spawnerHandle) clearInterval(spawnerHandle);
+          // Почистим сцену
+          document.querySelectorAll('.item').forEach(n=>n.remove());
+          // Мини-фейерверк и переход
+          fireworks(5);
+          try{ winSound.currentTime=0; winSound.play(); }catch(_){}
+          showLevelCompleteOverlay(currentLevel, levels.length, ()=> startLevel());
+        }
+      }, 1000);
+
+      // Спавн
+      if (spawnerHandle) clearInterval(spawnerHandle);
+      const pool = [
+        ...(lv.correct||[]).map(v=>({val:v, good:true})),
+        ...(lv.wrong||[]).map(v=>({val:v, good:false}))
+      ];
+      const delay = clamp(SPEED.spawn, 300, 2200);
+      spawnerHandle = setInterval(()=>{
+        if(!running) return;
+        const obj = pool[Math.floor(Math.random()*pool.length)] || {val:'?', good:false};
+        drop(obj);
+      }, delay);
+    }
+
+    /* ===================== Элемент: создание/падение/клик ===================== */
+    function drop(obj){
+      const STYLE = cfg.style || {};
+      const FONT = cfg.font || 'Rubik';
+      const FONT_SIZE = Number(cfg.fontSize || 24);
+      const TEXT_COLOR = cfg.textColor || '#ffffff';
+
+      const el = document.createElement('div');
+      el.className = `item shape-${STYLE.shape || 'rounded'} ${STYLE.shadow?'fx-shadow':''} ${STYLE.fx3d?'fx-3d':''} ${STYLE.glow?'fx-glow':''} ${STYLE.borderOn && STYLE.borderWidth>0 ? 'fx-border' : ''}`;
+      el.dataset.good = obj.good ? '1' : '0';
+      el.style.setProperty('--glow', STYLE.glowColor || '#00f0ff');
+
+      // структура
+          const bg = document.createElement('div');
+      bg.className = 'bg';
+      const content = document.createElement('div');
+      content.className = 'content';
+
+      // Применяем паддинги из редактора
+      const PAD = Number(STYLE.pad || 22);
+      content.style.padding = PAD + 'px';
+
+      el.appendChild(bg); el.appendChild(content);
+
+
+      // Фон рамки: либо картинка, либо цвет (строго взаимоисключающие)
+      const bgImg = (STYLE.bgImage||'').trim();
+      const bgCol = STYLE.bgColor || 'transparent';
+
+      if (bgImg) {
+        bg.style.backgroundImage = `url(${bgImg})`;
+        bg.style.backgroundColor = 'transparent';           // не смешиваем цвет с картинкой
+      } else {
+        bg.style.backgroundImage = 'none';
+        bg.style.backgroundColor = bgCol;                   // чистый цвет
+      }
+
+      // Прозрачность фон-слоя
+      bg.style.opacity = String(clamp(Number(STYLE.opacity ?? 1), 0, 1));
+
+      // Рамка (граница) — только если включена
+      if (STYLE.borderOn && STYLE.borderWidth>0){
+        bg.style.borderColor = STYLE.borderColor || '#fff';
+        bg.style.borderWidth = `${parseInt(STYLE.borderWidth,10)}px`;
+      } else {
+        bg.style.borderWidth = '0px';
+      }
+
+      // Контент: картинка/математика/текст
+      if(/^https?:\/\//i.test(obj.val)){
+        const img = document.createElement('img');
+        img.src = obj.val;
+        content.appendChild(img);
+      } else if ((cfg.language||'') === 'math'){
+        const span = document.createElement('span');
+        span.textContent = `\\(${obj.val}\\)`;
+        span.style.color = TEXT_COLOR;
+        content.appendChild(span);
+      } else {
+        const span = document.createElement('span');
+        span.textContent = String(obj.val);
+        span.style.color = TEXT_COLOR;
+        span.style.fontFamily = `${FONT}, system-ui, sans-serif`;
+        span.style.fontSize = `${FONT_SIZE}px`;
+        content.appendChild(span);
+      }
+
+      // Стартовая позиция
+      const gw = game.clientWidth;
+      const startX = Math.max(16, Math.min(gw-220, rnd(0, gw-220)));
+      el.style.left = startX + 'px';
+      el.style.top = '-160px';
+
+      game.appendChild(el);
+
+      // Подгоняем геометрию под контент + воздух
+      fitGeometryBox(el);
+
+      // Автофит текста
+      autoFitText(el, FONT_SIZE, 12);
+
+      // Если математический режим — перетайпсетить и ещё раз подровнять
+      if ((cfg.language||'') === 'math'){
+        MathJax.typesetPromise([el]).then(()=> fitGeometryBox(el));
+      }
+
+      // Падение
+      const vel = SPEED.vel;
+      const swayAmp = rnd(6, 22);
+      const swayFreq = rnd(0.003, 0.008);
+      let y = -160;
+      let t = 0;
+      let alive = true;
+
+      function step(){
+        if(!alive) return;
+        y += vel; t += 1;
+        const dx = Math.sin(t*swayFreq) * swayAmp;
+        el.style.top = y+'px';
+        el.style.transform = `translateX(${dx}px)`;
+        if(y > game.clientHeight + 200){
+          alive = false;
+          if (el.dataset.good === '1') {
+            missedCorrect++;
+          }
+          el.remove();
+          return;
+        }
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+
+      // Клик
+      el.addEventListener('click', ()=>{
+        if(!alive) return;
+
+        if(el.dataset.good === '1'){
+          // Очки
+          streak++;
+          const comboMult = 1 + (streak-1)*0.25;             // растущее комбо без потолка
+          const pts = Math.round(SPEED.basePts * comboMult);  // скорость влияет на базу
+          score += pts; hits++;
+          hudScore.textContent = String(score);
+
+          popScore(el, `+${pts}`);
+          playPop(el);
+          alive = false;
+          el.classList.add('caught');
+          setTimeout(()=> el.remove(), 380);
+        } else {
+          // Мимо: не вычитаем очки, но сбрасываем серию и даём визуальный фидбек
+          wrongClicks++;
+          streak = 0;
+          bg.style.filter = 'brightness(2) saturate(1.6) hue-rotate(-30deg)';
+          setTimeout(()=> bg.style.filter = 'none', 220);
+        }
+      });
+    }
+
+    /* ===================== Геометрия/автофит ===================== */
+    function fitGeometryBox(el){
+      const STYLE = cfg.style || {};
+      const shape = STYLE.shape || 'rounded';
+      const content = el.querySelector('.content');
+
+      // Сбросим, чтобы измерить «натуральный» размер
+      el.style.width = ''; el.style.height='';
+
+      const r = content.getBoundingClientRect();
+
+      // Воздух зависит от того, есть ли картинка-рамка
+      const hasImageFrame = Boolean((STYLE.bgImage||'').trim());
+      const padX = hasImageFrame ? 30 : 22;
+      const padY = hasImageFrame ? 24 : 18;
+
+      let W = Math.ceil(r.width + padX*2);
+      let H = Math.ceil(r.height + padY*2);
+
+      // Круг/ромб/звезда — делаем квадратный бокс, чтобы форма была «геометрическая», не приплюснутая
+      if (shape === 'circle' || shape === 'diamond' || shape === 'star'){
+        const S = Math.max(W, H);
+        W = H = Math.ceil(S + 16); // чуть воздуха сверху
+      }
+
+      el.style.width = W + 'px';
+      el.style.height = H + 'px';
+    }
+
+    function autoFitText(el, startPx, minPx){
+      const span = el.querySelector('.content span');
+      if(!span) return;
+    let fs = startPx;
+      const STYLE = cfg.style || {};
+      const pad = STYLE.pad ?? 18;
+      const maxW = el.clientWidth - pad*2;
+      const maxH = el.clientHeight - pad*2;
+      const fits = ()=> {
+        const rr = span.getBoundingClientRect();
+        return (rr.width <= maxW && rr.height <= maxH);
+      };
+
+      while (fs > minPx){
+        span.style.fontSize = fs + 'px';
+        if (fits()) break;
+        fs -= 1;
+      }
+    }
+
+    /* ===================== Эффекты / очки / фейерверк ===================== */
+    function playPop(el){
+      try{ popSound.currentTime = 0; popSound.play(); }catch(_){}
+      const r = el.getBoundingClientRect();
+      for(let i=0;i<14;i++){
+        const s = document.createElement('div');
+        s.className = 'sparkle';
+        s.style.left = (r.left + r.width/2) + 'px';
+        s.style.top  = (r.top  + r.height/2) + 'px';
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 40 + Math.random()*70;
+        s.style.setProperty('--dx', (Math.cos(angle)*dist) + 'px');
+        s.style.setProperty('--dy', (Math.sin(angle)*dist) + 'px');
+        s.style.animationDuration = (0.9 / (SPEED.basePts/12)) + 's';
+        document.body.appendChild(s);
+        setTimeout(()=> s.remove(), 1000);
+      }
+    }
+
+    function popScore(el, text){
+      const r = el.getBoundingClientRect();
+      const node = document.createElement('div');
+      node.className = 'score-float';
+      node.style.left = (r.left + r.width/2) + 'px';
+      node.style.top  = (r.top + 8) + 'px';
+      node.style.color = 'var(--ui)';
+      node.textContent = text;
+      document.body.appendChild(node);
+      setTimeout(()=> node.remove(), 900);
+    }
+
+    function fireworks(count=16){
+      const W = window.innerWidth, H = window.innerHeight;
+      for(let k=0;k<count;k++){
+        const x = Math.random()*W*0.8 + W*0.1;
+        const y = Math.random()*H*0.5 + H*0.1;
+        const parts = 24;
+        for(let i=0;i<parts;i++){
+          const p = document.createElement('div');
+          p.className='firework';
+          p.style.left = x+'px'; p.style.top = y+'px';
+          const angle = (Math.PI*2) * (i/parts) + Math.random()*0.2;
+          const dist = 60 + Math.random()*120;
+          p.style.setProperty('--tx', (Math.cos(angle)*dist)+'px');
+          p.style.setProperty('--ty', (Math.sin(angle)*dist)+'px');
+          p.style.background = `hsl(${Math.floor(Math.random()*360)},90%,70%)`;
+          document.body.appendChild(p);
+          setTimeout(()=> p.remove(), 900);
+        }
+      }
+    }
+  </script>
+</body>
+</html>
