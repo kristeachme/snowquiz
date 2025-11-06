@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Викторина</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    max-width: 800px;
+  }
+  h1 {
+    margin-bottom: 10px;
+  }
+  .question-block {
+    margin-bottom: 20px;
+  }
+  .question-block p {
+    font-weight: bold;
+  }
+  .question-block label {
+    display: block;
+    margin: 5px 0;
+  }
+  button {
+    margin-top: 10px;
+    padding: 6px 12px;
+    background: #3498db;
+    color: white;
+    border: none;
+    cursor: pointer;
+  }
+  button:hover {
+    background: #2980b9;
+  }
+  #result {
+    font-size: 1.2em;
+    margin-top: 20px;
+  }
+</style>
+</head>
+<body>
+<h1 id="quiz-title">Загрузка...</h1>
+<div id="quiz-container"></div>
+
+<script>
+  let questions = [];
+  let current = 0;
+  let score = 0;
+
+  function showResult() {
+    const container = document.getElementById('quiz-container');
+    container.innerHTML = '';
+    document.getElementById('quiz-title').textContent = "Результат:";
+    const resultElem = document.createElement('div');
+    resultElem.id = 'result';
+    resultElem.innerHTML = `Вы ответили правильно на <b>${score}</b> из <b>${questions.length}</b> вопросов.`;
+    container.appendChild(resultElem);
+  }
+
+  function showQuestion(index) {
+    const container = document.getElementById('quiz-container');
+    container.innerHTML = '';
+    if (index >= questions.length) {
+      showResult();
+      return;
+    }
+    const q = questions[index];
+    const qElem = document.createElement('div');
+    qElem.className = 'question-block';
+    const qText = document.createElement('p');
+    qText.textContent = q.question;
+    qElem.appendChild(qText);
+    q.answers.forEach((ans, i) => {
+      const label = document.createElement('label');
+      label.innerHTML = `<input type="radio" name="answer" value="${i}"> ${ans}`;
+      qElem.appendChild(label);
+    });
+    const btn = document.createElement('button');
+    btn.textContent = (index < questions.length - 1) ? 'Следующий' : 'Завершить';
+    btn.addEventListener('click', function() {
+      const selected = qElem.querySelector('input[name="answer"]:checked');
+      if (!selected) {
+        alert("Пожалуйста, выберите ответ.");
+        return;
+      }
+      if (parseInt(selected.value) === q.correct) {
+        score++;
+      }
+      current++;
+      showQuestion(current);
+    });
+    qElem.appendChild(btn);
+    container.appendChild(qElem);
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(window.location.search);
+    const quizId = params.get('id');
+    if (!quizId) {
+      document.getElementById('quiz-title').textContent = 'ID викторины не указан.';
+      return;
+    }
+    fetch(quizId + '.json')
+      .then(response => {
+        if (!response.ok) throw new Error('Не удалось загрузить JSON');
+        return response.json();
+      })
+      .then(data => {
+        document.getElementById('quiz-title').textContent = data.title || 'Викторина';
+        questions = data.questions || [];
+        showQuestion(current);
+      })
+      .catch(error => {
+        document.getElementById('quiz-title').textContent = 'Ошибка загрузки викторины.';
+        console.error(error);
+      });
+  });
+</script>
+</body>
+</html>
